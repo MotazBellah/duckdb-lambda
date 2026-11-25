@@ -1,0 +1,23 @@
+[project]
+name = "duckdb-lambda-s3"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "moatazbellah", email = "moatazbellah.ghobashy@adsquare.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "duckdb==2.0.1",
+    "boto3==1.44.11",
+]
+
+[dependency-groups]
+lambda = ["duckdb==2.0.1"]
+
+[project.scripts]
+duckdb-lambda-s3 = "duckdb_lambda_s3:main"
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"
