@@ -11,6 +11,15 @@ class S3Resource:
     def client(self):
         return boto3.client("s3")
 
+    def list_keys(self, bucket: str, prefix: str) -> list[str]:
+        """Returns all object keys under s3://bucket/prefix (handles pagination)."""
+        paginator = self.client.get_paginator("list_objects_v2")
+        return [
+            obj["Key"]
+            for page in paginator.paginate(Bucket=bucket, Prefix=prefix)
+            for obj in page.get("Contents", [])
+        ]
+
     def download(self, bucket: str, key: str, local_path: str) -> str:
         """Downloads s3://bucket/key to local_path and returns local_path."""
         os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
