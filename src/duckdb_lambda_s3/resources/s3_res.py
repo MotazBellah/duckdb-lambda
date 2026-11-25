@@ -26,6 +26,15 @@ class S3Resource:
         self.client.download_file(bucket, key, local_path)
         return local_path
 
+    def download_prefix(self, bucket: str, prefix: str, local_dir: str) -> str:
+        """Downloads every object under s3://bucket/prefix flat into local_dir."""
+        keys = [k for k in self.list_keys(bucket, prefix) if not k.endswith("/")]
+        if not keys:
+            raise FileNotFoundError(f"No objects under s3://{bucket}/{prefix}")
+        for key in keys:
+            self.download(bucket, key, os.path.join(local_dir, os.path.basename(key)))
+        return local_dir
+
     def upload(self, local_path: str, bucket: str, key: str) -> str:
         """Uploads local_path to s3://bucket/key and returns the s3 uri."""
         self.client.upload_file(local_path, bucket, key)
