@@ -8,6 +8,12 @@ variable "floci_endpoint" {
   default = "http://localhost:4566"
 }
 
+variable "lambda_aws_endpoint_url" {
+  description = "AWS_ENDPOINT_URL inside the Lambda container (Floci address as seen from that container, not localhost). Null on real AWS."
+  type        = string
+  default     = "http://host.docker.internal:4566"
+}
+
 variable "project" {
   description = "Prefix for bucket names"
   type        = string
