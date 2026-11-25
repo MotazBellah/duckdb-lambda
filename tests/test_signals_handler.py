@@ -58,11 +58,11 @@ def fake_s3(tmp_path, monkeypatch):
     monkeypatch.setattr(handler_module, "LANDING_BUCKET", "test-landing")
     monkeypatch.setattr(handler_module, "SIGNALS_PREFIX", "signal_data/")
     monkeypatch.setattr(handler_module, "STAGING_BUCKET", "test-staging")
-    monkeypatch.setattr(handler_module, "STAGING_KEY", "signals/signals.parquet")
+    monkeypatch.setattr(handler_module, "STAGING_PREFIX", "signals/")
     return calls
 
 
-def test_merges_all_parts_into_one_parquet(fake_s3):
+def test_converts_all_parts_to_parquet_under_staging_prefix(fake_s3):
     result = handler_module.handler({}, None)
 
     # Only the .csv.gz parts are downloaded, the readme is skipped.
@@ -70,11 +70,17 @@ def test_merges_all_parts_into_one_parquet(fake_s3):
         "signal_data/part_1.csv.gz",
         "signal_data/part_2.csv.gz",
     ]
-    # Exactly one parquet file goes to staging.
-    assert len(fake_s3["uploads"]) == 1
-    bucket, key, parquet_path = fake_s3["uploads"][0]
-    assert (bucket, key) == ("test-staging", "signals/signals.parquet")
-    assert result == {"parts": 2, "output": "s3://test-staging/signals/signals.parquet"}
+    # PER_THREAD_OUTPUT: the number of files depends on how many threads got
+    # data, so only check that every file lands under the staging prefix.
+    assert len(fake_s3["uploads"]) >= 1
+    for bucket, key, _ in fake_s3["uploads"]:
+        assert bucket == "test-staging"
+        assert key.startswith("signals/signals_") and key.endswith(".parquet")
+    assert result["parts"] == 2
+    assert result["outputs"] == [
+        f"s3://test-staging/{key}" for _, key, _ in fake_s3["uploads"]
+    ]
+    parquet_glob = str(fake_s3["uploads"][0][2].parent / "*.parquet")
 
     # connect() loads the spatial extension, so ST_* functions work here.
     con = handler_module.duckdb_resource.connect("verify.duckdb")
@@ -82,13 +88,13 @@ def test_merges_all_parts_into_one_parquet(fake_s3):
         columns = [
             r[0]
             for r in con.execute(
-                f"DESCRIBE SELECT * FROM read_parquet('{parquet_path}')"
+                f"DESCRIBE SELECT * FROM read_parquet('{parquet_glob}')"
             ).fetchall()
         ]
         rows = con.execute(
             f"""
             SELECT device_id, date, ST_X(geom), ST_Y(geom)
-            FROM read_parquet('{parquet_path}')
+            FROM read_parquet('{parquet_glob}')
             ORDER BY device_id
             """
         ).fetchall()

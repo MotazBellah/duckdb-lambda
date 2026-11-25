@@ -37,3 +37,22 @@ variable "layers" {
   type        = set(string)
   default     = ["landing", "staging", "curated"]
 }
+
+# --- signals memory scenario ------------------------------------------------
+variable "signals_memory_size" {
+  description = "Lambda memory (MB) of the signals function"
+  type        = number
+  default     = 4096
+}
+
+variable "signals_duckdb_memory_limit" {
+  description = "DuckDB memory_limit inside the signals function (keep below signals_memory_size)"
+  type        = string
+  default     = "3GB"
+}
+
+variable "signals_row_group_size" {
+  description = "Parquet ROW_GROUP_SIZE used by the signals COPY (DuckDB default is 122880)"
+  type        = number
+  default     = 100000
+}

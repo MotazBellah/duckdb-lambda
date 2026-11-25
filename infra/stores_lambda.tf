@@ -1,4 +1,4 @@
-# Stores handler: landing/stores.csv -> staging/stores/stores.parquet
+# Stores handler: landing/stores.csv -> staging/stores/*.parquet
 
 locals {
   landing_bucket = aws_s3_bucket.layer["landing"]
@@ -79,7 +79,7 @@ resource "aws_lambda_function" "stores_handler" {
     variables = merge(
       {
         STAGING_BUCKET = local.staging_bucket.bucket
-        STAGING_KEY    = "stores/stores.parquet"
+        STAGING_PREFIX = "stores/"
       },
       # boto3 reads AWS_ENDPOINT_URL itself. Leave the variable null on real AWS.
       var.lambda_aws_endpoint_url == null ? {} : { AWS_ENDPOINT_URL = var.lambda_aws_endpoint_url },

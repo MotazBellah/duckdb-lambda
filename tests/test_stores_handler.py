@@ -43,7 +43,7 @@ def fake_s3(tmp_path, monkeypatch):
         handler_module.duckdb_resource, "temp_directory", str(tmp_path / "duckdb")
     )
     monkeypatch.setattr(handler_module, "STAGING_BUCKET", "test-staging")
-    monkeypatch.setattr(handler_module, "STAGING_KEY", "stores/stores.parquet")
+    monkeypatch.setattr(handler_module, "STAGING_PREFIX", "stores/")
     return calls
 
 
@@ -51,13 +51,17 @@ def test_converts_csv_to_parquet_and_uploads_to_staging(fake_s3):
     result = handler_module.handler(make_event("test-landing", "stores.csv"), None)
 
     assert fake_s3["downloads"] == [("test-landing", "stores.csv")]
-    assert len(fake_s3["uploads"]) == 1
-    bucket, key, parquet_path = fake_s3["uploads"][0]
-    assert (bucket, key) == ("test-staging", "stores/stores.parquet")
-    assert result == {
-        "source": "s3://test-landing/stores.csv",
-        "output": "s3://test-staging/stores/stores.parquet",
-    }
+    # PER_THREAD_OUTPUT: the number of files depends on the threads used,
+    # so only check that every file lands under the staging prefix.
+    assert len(fake_s3["uploads"]) >= 1
+    for bucket, key, _ in fake_s3["uploads"]:
+        assert bucket == "test-staging"
+        assert key.startswith("stores/stores_") and key.endswith(".parquet")
+    assert result["source"] == "s3://test-landing/stores.csv"
+    assert result["outputs"] == [
+        f"s3://test-staging/{key}" for _, key, _ in fake_s3["uploads"]
+    ]
+    parquet_glob = str(fake_s3["uploads"][0][2].parent / "*.parquet")
 
     # connect() loads the spatial extension, so ST_* functions work here.
     con = handler_module.duckdb_resource.connect("verify.duckdb")
@@ -65,7 +69,7 @@ def test_converts_csv_to_parquet_and_uploads_to_staging(fake_s3):
         rows = con.execute(
             f"""
             SELECT store_id, store_name, ST_GeometryType(geom)::VARCHAR, ST_Area(geom)
-            FROM read_parquet('{parquet_path}')
+            FROM read_parquet('{parquet_glob}')
             ORDER BY store_id
             """
         ).fetchall()

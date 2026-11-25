@@ -1,4 +1,4 @@
-# Signals handler: landing/signal_data/*.csv.gz -> staging/signals/signals.parquet
+# Signals handler: landing/signal_data/*.csv.gz -> staging/signals/*.parquet
 # Invoked manually (no S3 trigger): a trigger would run it once per uploaded part.
 #
 # Reuses from stores_lambda.tf: local.landing_bucket, local.staging_bucket,
@@ -56,8 +56,8 @@ resource "aws_lambda_function" "signals_handler" {
   source_code_hash = data.archive_file.stores_handler.output_base64sha256
   layers           = [aws_lambda_layer_version.duckdb.arn]
 
-  # DuckDB memory_limit is 3GB; leave headroom above it.
-  memory_size = 4096
+  # Keep var.signals_duckdb_memory_limit below this, with headroom for the runtime.
+  memory_size = var.signals_memory_size
   timeout     = 900 # 15 min is the Lambda maximum; measure and lower it later
 
   # ~707MB of gz parts are downloaded to /tmp, plus DuckDB spill and the parquet output.
@@ -71,7 +71,10 @@ resource "aws_lambda_function" "signals_handler" {
         LANDING_BUCKET = local.landing_bucket.bucket
         SIGNALS_PREFIX = "signal_data/"
         STAGING_BUCKET = local.staging_bucket.bucket
-        STAGING_KEY    = "signals/signals.parquet"
+        STAGING_PREFIX = "signals/"
+
+        DUCKDB_MEMORY_LIMIT = var.signals_duckdb_memory_limit
+        ROW_GROUP_SIZE      = tostring(var.signals_row_group_size)
       },
       var.lambda_aws_endpoint_url == null ? {} : { AWS_ENDPOINT_URL = var.lambda_aws_endpoint_url },
     )

@@ -14,14 +14,15 @@ duckdb_resource = DuckDBResource(
 )
 
 STAGING_BUCKET = os.environ.get("STAGING_BUCKET", "duckdb-demo-staging")
-STAGING_KEY = os.environ.get("STAGING_KEY", "stores/stores.parquet")
+STAGING_PREFIX = os.environ.get("STAGING_PREFIX", "stores/")
 
 
 def handler(event, context):
     """Triggered by an S3 ObjectCreated event for stores.csv in the landing bucket.
 
     Downloads the CSV, converts the WKT column to a geometry, writes Parquet
-    and uploads it to the staging bucket.
+    (a directory of files, one per thread) and uploads them under the staging
+    prefix.
     """
     record = event["Records"][0]["s3"]
     bucket = record["bucket"]["name"]
@@ -29,7 +30,7 @@ def handler(event, context):
 
     with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
         stores_csv = s3_resource.download(bucket, key, str(Path(tmp) / "stores.csv"))
-        out_file = Path(tmp) / "stores.parquet"
+        out_dir = Path(tmp) / "out"  # PER_THREAD_OUTPUT writes a directory
 
         with duckdb_resource.open_database("stores.duckdb") as con:
             con.execute(f"""
@@ -39,9 +40,18 @@ def handler(event, context):
                         store_name,
                         ST_GeomFromText(wkt) AS geom
                     FROM read_csv_auto('{stores_csv}')
-                ) TO '{out_file}' (FORMAT PARQUET)
+                ) TO '{out_dir}' (
+                    FORMAT PARQUET,
+                    OVERWRITE_OR_IGNORE,
+                    PER_THREAD_OUTPUT true,
+                    FILENAME_PATTERN 'stores_{{i}}',
+                    ROW_GROUP_SIZE 100_000
+                )
             """)
 
-        uri = s3_resource.upload(str(out_file), STAGING_BUCKET, STAGING_KEY)
+        outputs = [
+            s3_resource.upload(str(f), STAGING_BUCKET, f"{STAGING_PREFIX}{f.name}")
+            for f in sorted(out_dir.glob("*.parquet"))
+        ]
 
-    return {"source": f"s3://{bucket}/{key}", "output": uri}
+    return {"source": f"s3://{bucket}/{key}", "outputs": outputs}
