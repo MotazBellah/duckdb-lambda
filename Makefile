@@ -63,9 +63,7 @@ upload-data:
 # a) stores -> staging/stores/stores.parquet
 run-stores:
 	$(AWSF) lambda invoke --function-name $(PROJECT)-stores-handler \
-		--cli-binary-format raw-in-base64-out \
-		--payload '{"Records":[{"s3":{"bucket":{"name":"$(PROJECT)-landing"},"object":{"key":"stores.csv"}}}]}' \
-		/dev/stdout
+		--cli-read-timeout 900 /dev/stdout
 
 # b) signals -> staging/signals/signals.parquet
 run-signals:

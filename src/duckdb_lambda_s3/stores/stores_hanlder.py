@@ -1,57 +1,55 @@
 import os
-import tempfile
-from pathlib import Path
-from urllib.parse import unquote_plus
+
+import duckdb
 
 from duckdb_lambda_s3.resources.duckdb_res import DuckDBResource
-from duckdb_lambda_s3.resources.s3_res import S3Resource
 
-s3_resource = S3Resource()
 duckdb_resource = DuckDBResource(
     memory_limit="1GB",
     temp_directory="/tmp/duckdb",
     threads=2,
 )
 
+LANDING_BUCKET = os.environ.get("LANDING_BUCKET", "duckdb-demo-landing")
+STORES_KEY = os.environ.get("STORES_KEY", "stores.csv")
 STAGING_BUCKET = os.environ.get("STAGING_BUCKET", "duckdb-demo-staging")
 STAGING_PREFIX = os.environ.get("STAGING_PREFIX", "stores/")
 
 
-def handler(event, context):
-    """Triggered by an S3 ObjectCreated event for stores.csv in the landing bucket.
-
-    Downloads the CSV, converts the WKT column to a geometry, writes Parquet
-    (a directory of files, one per thread) and uploads them under the staging
-    prefix.
+def convert_stores(con: duckdb.DuckDBPyConnection, source: str, destination: str) -> int:
+    """Reads the stores CSV, converts WKT to a geometry and writes Parquet files
+    into the `destination` directory (a local path or an s3:// URI).
+    Returns the number of rows written.
     """
-    record = event["Records"][0]["s3"]
-    bucket = record["bucket"]["name"]
-    key = unquote_plus(record["object"]["key"])  # S3 event keys are URL-encoded
+    return con.execute(f"""
+        COPY (
+            SELECT
+                store_id,
+                store_name,
+                ST_GeomFromText(wkt) AS geom
+            FROM read_csv_auto('{source}')
+        ) TO '{destination}' (
+            FORMAT PARQUET,
+            OVERWRITE_OR_IGNORE,
+            PER_THREAD_OUTPUT true,
+            FILENAME_PATTERN 'stores_{{i}}',
+            ROW_GROUP_SIZE 100_000
+        )
+    """).fetchone()[0]
 
-    with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
-        stores_csv = s3_resource.download(bucket, key, str(Path(tmp) / "stores.csv"))
-        out_dir = Path(tmp) / "out"  # PER_THREAD_OUTPUT writes a directory
 
-        with duckdb_resource.open_database("stores.duckdb") as con:
-            con.execute(f"""
-                COPY (
-                    SELECT
-                        store_id,
-                        store_name,
-                        ST_GeomFromText(wkt) AS geom
-                    FROM read_csv_auto('{stores_csv}')
-                ) TO '{out_dir}' (
-                    FORMAT PARQUET,
-                    OVERWRITE_OR_IGNORE,
-                    PER_THREAD_OUTPUT true,
-                    FILENAME_PATTERN 'stores_{{i}}',
-                    ROW_GROUP_SIZE 100_000
-                )
-            """)
+def handler(event, context):
+    """Converts landing/stores.csv to Parquet in the staging bucket.
 
-        outputs = [
-            s3_resource.upload(str(f), STAGING_BUCKET, f"{STAGING_PREFIX}{f.name}")
-            for f in sorted(out_dir.glob("*.parquet"))
-        ]
+    DuckDB reads the CSV straight from S3 and writes the Parquet files straight
+    to the staging bucket: nothing is downloaded to the Lambda.
 
-    return {"source": f"s3://{bucket}/{key}", "outputs": outputs}
+    The event is ignored, so invoke it directly.
+    """
+    source = f"s3://{LANDING_BUCKET}/{STORES_KEY}"
+    destination = f"s3://{STAGING_BUCKET}/{STAGING_PREFIX.strip('/')}"
+
+    with duckdb_resource.open_database("stores.duckdb") as con:
+        rows = convert_stores(con, source, destination)
+
+    return {"source": source, "output": destination, "rows": rows}

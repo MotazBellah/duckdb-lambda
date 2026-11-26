@@ -14,6 +14,24 @@ variable "lambda_aws_endpoint_url" {
   default     = "http://host.docker.internal:4566"
 }
 
+variable "s3_key_id" {
+  description = "S3_KEY_ID env var of the lambdas (DuckDB S3 secret)"
+  type        = string
+  default     = "test"
+}
+
+variable "s3_secret" {
+  description = "S3_SECRET env var of the lambdas (DuckDB S3 secret)"
+  type        = string
+  default     = "test"
+}
+
+variable "s3_region" {
+  description = "S3_REGION env var of the lambdas (DuckDB S3 secret)"
+  type        = string
+  default     = "us-east-1"
+}
+
 variable "project" {
   description = "Prefix for bucket names"
   type        = string

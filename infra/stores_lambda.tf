@@ -1,6 +1,14 @@
 # Stores handler: landing/stores.csv -> staging/stores/*.parquet
+# Invoked manually (no S3 trigger), like the other handlers.
 
 locals {
+  # Read by DuckDBResource to create the S3 secret.
+  s3_env = {
+    S3_KEY_ID = var.s3_key_id
+    S3_SECRET = var.s3_secret
+    S3_REGION = var.s3_region
+  }
+
   landing_bucket = aws_s3_bucket.layer["landing"]
   staging_bucket = aws_s3_bucket.layer["staging"]
 }
@@ -40,8 +48,14 @@ data "aws_iam_policy_document" "stores_handler" {
   }
 
   statement {
+    sid       = "ListStaging" # DuckDB lists the target folder before writing
+    actions   = ["s3:ListBucket"]
+    resources = [local.staging_bucket.arn]
+  }
+
+  statement {
     sid       = "WriteStaging"
-    actions   = ["s3:PutObject"]
+    actions   = ["s3:PutObject", "s3:AbortMultipartUpload"] # DuckDB uploads in parts
     resources = ["${local.staging_bucket.arn}/*"]
   }
 
@@ -77,7 +91,10 @@ resource "aws_lambda_function" "stores_handler" {
 
   environment {
     variables = merge(
+      local.s3_env,
       {
+        LANDING_BUCKET = local.landing_bucket.bucket
+        STORES_KEY     = "stores.csv"
         STAGING_BUCKET = local.staging_bucket.bucket
         STAGING_PREFIX = "stores/"
       },
@@ -85,27 +102,6 @@ resource "aws_lambda_function" "stores_handler" {
       var.lambda_aws_endpoint_url == null ? {} : { AWS_ENDPOINT_URL = var.lambda_aws_endpoint_url },
     )
   }
-}
-
-# --- Trigger: landing bucket -> lambda --------------------------------------
-resource "aws_lambda_permission" "allow_landing" {
-  statement_id  = "AllowExecutionFromLandingBucket"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.stores_handler.function_name
-  principal     = "s3.amazonaws.com"
-  source_arn    = local.landing_bucket.arn
-}
-
-resource "aws_s3_bucket_notification" "landing_stores" {
-  bucket = local.landing_bucket.id
-
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.stores_handler.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_suffix       = "stores.csv"
-  }
-
-  depends_on = [aws_lambda_permission.allow_landing]
 }
 
 output "stores_handler_arn" {

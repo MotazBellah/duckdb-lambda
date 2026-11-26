@@ -25,8 +25,14 @@ data "aws_iam_policy_document" "signals_handler" {
   }
 
   statement {
+    sid       = "ListStaging" # DuckDB lists the target folder before writing
+    actions   = ["s3:ListBucket"]
+    resources = [local.staging_bucket.arn]
+  }
+
+  statement {
     sid       = "WriteStaging"
-    actions   = ["s3:PutObject"]
+    actions   = ["s3:PutObject", "s3:AbortMultipartUpload"] # DuckDB uploads in parts
     resources = ["${local.staging_bucket.arn}/*"]
   }
 
@@ -60,13 +66,14 @@ resource "aws_lambda_function" "signals_handler" {
   memory_size = var.signals_memory_size
   timeout     = 900 # 15 min is the Lambda maximum; measure and lower it later
 
-  # ~707MB of gz parts are downloaded to /tmp, plus DuckDB spill and the parquet output.
+  # Nothing is downloaded: DuckDB reads and writes S3 directly. /tmp is only spill space.
   ephemeral_storage {
-    size = 6144
+    size = 2048
   }
 
   environment {
     variables = merge(
+      local.s3_env,
       {
         LANDING_BUCKET = local.landing_bucket.bucket
         SIGNALS_PREFIX = "signal_data/"

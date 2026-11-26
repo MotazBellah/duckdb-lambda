@@ -29,7 +29,7 @@ data "aws_iam_policy_document" "matched_signals_handler" {
 
   statement {
     sid       = "WriteCurated"
-    actions   = ["s3:PutObject"]
+    actions   = ["s3:PutObject", "s3:AbortMultipartUpload"] # DuckDB uploads in parts
     resources = ["${local.curated_bucket.arn}/*"]
   }
 
@@ -63,13 +63,14 @@ resource "aws_lambda_function" "matched_signals_handler" {
   memory_size = 4096
   timeout     = 900
 
-  # signals.parquet, the DuckDB tables built from it, spill files and the output.
+  # Nothing is downloaded: DuckDB reads and writes S3 directly. /tmp is only spill space.
   ephemeral_storage {
-    size = 6144
+    size = 2048
   }
 
   environment {
     variables = merge(
+      local.s3_env,
       {
         STAGING_BUCKET = local.staging_bucket.bucket
         STORES_PREFIX  = "stores/"

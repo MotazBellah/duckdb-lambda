@@ -1,9 +1,7 @@
-import shutil
-from pathlib import Path
-
 import pytest
 
 from duckdb_lambda_s3.matched_signals import matched_signals_handler as handler_module
+from duckdb_lambda_s3.resources.duckdb_res import DuckDBResource
 
 # Two 0.1 x 0.1 degree squares.
 STORES = [
@@ -19,92 +17,66 @@ SIGNALS = [
 ]
 
 
-def write_parquet(con, select_sql: str, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    con.execute(f"COPY ({select_sql}) TO '{path}' (FORMAT PARQUET)")
+@pytest.fixture
+def con(tmp_path):
+    """Real DuckDB with spatial loaded, working on local files (no S3)."""
+    resource = DuckDBResource(
+        temp_directory=str(tmp_path / "duckdb"), memory_limit="512MB", threads=2
+    )
+    with resource.open_database("test.duckdb") as connection:
+        yield connection
 
 
 @pytest.fixture
-def fake_s3(tmp_path, monkeypatch):
-    """Fakes S3 with local folders: <tmp>/s3/<bucket>/<key>."""
-    monkeypatch.setattr(
-        handler_module.duckdb_resource, "temp_directory", str(tmp_path / "duckdb")
+def staging(con, tmp_path):
+    """Builds the input parquet files the same way the stores/signals handlers do."""
+    stores_dir = tmp_path / "staging" / "stores"
+    signals_dir = tmp_path / "staging" / "signals"
+    stores_dir.mkdir(parents=True)
+    signals_dir.mkdir(parents=True)
+
+    stores_values = ", ".join(
+        "('{}', '{}', '{}')".format(i, n.replace("'", "''"), w) for i, n, w in STORES
     )
-    staging = tmp_path / "s3" / "test-staging"
-
-    # Build the input parquet files the same way the stores/signals handlers do.
-    con = handler_module.duckdb_resource.connect("fixtures.duckdb")
-    try:
-        stores_values = ", ".join(f"('{i}', '{n.replace(chr(39), chr(39) * 2)}', '{w}')" for i, n, w in STORES)
-        write_parquet(
-            con,
-            f"SELECT store_id, store_name, ST_GeomFromText(wkt) AS geom "
-            f"FROM (VALUES {stores_values}) t(store_id, store_name, wkt)",
-            staging / "stores" / "stores.parquet",
-        )
-        signals_values = ", ".join(f"({d}, '{dt}', {lon}, {lat})" for d, dt, lon, lat in SIGNALS)
-        write_parquet(
-            con,
-            f"SELECT device_id, date, ST_Point(lon, lat) AS geom "
-            f"FROM (VALUES {signals_values}) t(device_id, date, lon, lat)",
-            staging / "signals" / "signals.parquet",
-        )
-    finally:
-        con.close()
-
-    uploaded = tmp_path / "uploaded"
-    uploaded.mkdir()
-    calls = {"uploads": []}
-
-    def fake_download_prefix(bucket, prefix, local_dir):
-        files = list((tmp_path / "s3" / bucket / prefix).glob("*"))
-        if not files:
-            raise FileNotFoundError(f"No objects under s3://{bucket}/{prefix}")
-        Path(local_dir).mkdir(parents=True, exist_ok=True)
-        for f in files:
-            shutil.copy(f, Path(local_dir) / f.name)
-        return local_dir
-
-    def fake_upload(local_path, bucket, key):
-        # The handler deletes its temp dir on return, so copy the file now.
-        target = uploaded / Path(key).name
-        shutil.copy(local_path, target)
-        calls["uploads"].append((bucket, key, target))
-        return f"s3://{bucket}/{key}"
-
-    monkeypatch.setattr(handler_module.s3_resource, "download_prefix", fake_download_prefix)
-    monkeypatch.setattr(handler_module.s3_resource, "upload", fake_upload)
-    monkeypatch.setattr(handler_module, "STAGING_BUCKET", "test-staging")
-    monkeypatch.setattr(handler_module, "STORES_PREFIX", "stores")
-    monkeypatch.setattr(handler_module, "SIGNALS_PREFIX", "signals")
-    monkeypatch.setattr(handler_module, "CURATED_BUCKET", "test-curated")
-    monkeypatch.setattr(handler_module, "CURATED_KEY", "matched_signals/matched_signals.parquet")
-    return calls
+    con.execute(
+        f"""
+        COPY (
+            SELECT store_id, store_name, ST_GeomFromText(wkt) AS geom
+            FROM (VALUES {stores_values}) t(store_id, store_name, wkt)
+        ) TO '{stores_dir}/stores_0.parquet' (FORMAT PARQUET)
+        """
+    )
+    signals_values = ", ".join(
+        f"({d}, '{dt}', {lon}, {lat})" for d, dt, lon, lat in SIGNALS
+    )
+    con.execute(
+        f"""
+        COPY (
+            SELECT device_id, date, ST_Point(lon, lat) AS geom
+            FROM (VALUES {signals_values}) t(device_id, date, lon, lat)
+        ) TO '{signals_dir}/signals_0.parquet' (FORMAT PARQUET)
+        """
+    )
+    return stores_dir, signals_dir
 
 
-def test_matches_signals_to_stores_and_uploads_to_curated(fake_s3):
-    result = handler_module.handler({}, None)
+def test_matches_signals_to_stores(con, staging, tmp_path):
+    stores_dir, signals_dir = staging
+    output = tmp_path / "curated" / "matched_signals.parquet"
+    output.parent.mkdir()
 
-    assert len(fake_s3["uploads"]) == 1
-    bucket, key, parquet_path = fake_s3["uploads"][0]
-    assert (bucket, key) == ("test-curated", "matched_signals/matched_signals.parquet")
-    assert result == {
-        "matches": 3,
-        "output": "s3://test-curated/matched_signals/matched_signals.parquet",
-    }
+    matches = handler_module.match_signals(
+        con, f"{stores_dir}/*.parquet", f"{signals_dir}/*.parquet", str(output)
+    )
 
-    con = handler_module.duckdb_resource.connect("verify.duckdb")
-    try:
-        rows = con.execute(
-            f"""
-            SELECT device_id, date, store_id, store_name
-            FROM read_parquet('{parquet_path}')
-            ORDER BY device_id
-            """
-        ).fetchall()
-    finally:
-        con.close()
-
+    assert matches == 3
+    rows = con.execute(
+        f"""
+        SELECT device_id, date, store_id, store_name
+        FROM read_parquet('{output}')
+        ORDER BY device_id
+        """
+    ).fetchall()
     # Device 2 is outside every store, so it is dropped.
     # Device 3 sits on the edge: ST_Intersects counts it as a match.
     assert rows == [
@@ -114,10 +86,14 @@ def test_matches_signals_to_stores_and_uploads_to_curated(fake_s3):
     ]
 
 
-def test_raises_when_staging_input_is_missing(fake_s3, monkeypatch):
-    monkeypatch.setattr(handler_module, "SIGNALS_PREFIX", "does_not_exist")
+def test_raises_when_staging_input_is_missing(con, staging, tmp_path):
+    stores_dir, _ = staging
+    output = tmp_path / "curated" / "matched_signals.parquet"
+    output.parent.mkdir()
 
-    with pytest.raises(FileNotFoundError):
-        handler_module.handler({}, None)
+    with pytest.raises(Exception):
+        handler_module.match_signals(
+            con, f"{stores_dir}/*.parquet", f"{tmp_path}/missing/*.parquet", str(output)
+        )
 
-    assert fake_s3["uploads"] == []
+    assert not output.exists()  # nothing is written on failure

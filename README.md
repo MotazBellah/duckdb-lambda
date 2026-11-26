@@ -22,7 +22,7 @@ flowchart LR
         C1["matched_signals/matched_signals.parquet"]
     end
 
-    L1 -- "S3 event trigger" --> F1["Lambda: stores-handler"]
+    L1 -- "manual invoke" --> F1["Lambda: stores-handler"]
     F1 --> S1
 
     L2 -- "manual invoke" --> F2["Lambda: signals-handler"]
@@ -49,18 +49,21 @@ Step 3 needs the outputs of steps 1 and 2, so run them in order.
 
 ```
 src/duckdb_lambda_s3/
-  resources/            DuckDBResource (connection config), S3Resource (list / download / upload)
+  resources/            DuckDBResource (connection config + direct S3 access)
   stores/               stores handler
   signals/              signals handler
   matched_signals/      matched signals handler
-infra/                  Terraform (buckets, layer, lambdas, IAM, S3 trigger)
-tests/                  unit tests (S3 is faked, DuckDB is real)
+infra/                  Terraform (buckets, layer, lambdas, IAM)
+tests/                  unit tests (real DuckDB on local files, no S3)
 data/                   local sample data (not committed)
 Makefile                layer build, terraform and pipeline shortcuts
 ```
 
+The Lambdas never download files: DuckDB reads and writes `s3://` paths directly through its `httpfs`
+extension (credentials come from the Lambda's own environment).
+
 The code lives in the Lambda zip. DuckDB lives in a **layer** built from the `lambda` dependency
-group in `pyproject.toml`. `boto3` is not in the layer because the Lambda runtime provides it.
+group in `pyproject.toml`.
 
 ## Run it
 
@@ -89,7 +92,7 @@ The Makefile sets dummy credentials for Floci. Change the endpoint or project na
 
 ## Demo: running out of memory, and the fix
 
-The signals Lambda writes a large Parquet file. The writer buffers `ROW_GROUP_SIZE` rows per thread
+The signals Lambda writes a large Parquet output. The writer buffers `ROW_GROUP_SIZE` rows per thread
 before flushing, so a huge row group on a small Lambda runs out of memory. Both runs use the same
 1 GB Lambda and only differ in the row group size:
 
