@@ -67,6 +67,7 @@ resource "aws_lambda_function" "signals_handler" {
   timeout     = 900 # 15 min is the Lambda maximum; measure and lower it later
 
   # Nothing is downloaded: DuckDB reads and writes S3 directly. /tmp is only spill space.
+  # https://docs.aws.amazon.com/lambda/latest/dg/configuration-ephemeral-storage.html
   ephemeral_storage {
     size = 2048
   }

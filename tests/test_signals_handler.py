@@ -38,26 +38,29 @@ def raw_dir(tmp_path):
 
 
 def test_converts_all_parts_to_parquet(con, raw_dir, tmp_path):
-    out_dir = tmp_path / "out"
+    # PER_THREAD_OUTPUT writes a directory of signals_{i}.parquet files.
+    out_dir = tmp_path / "signals"
 
     rows_written = handler_module.convert_signals(
         con, f"{raw_dir}/*.csv.gz", str(out_dir)
     )
 
     assert rows_written == 3
-    # PER_THREAD_OUTPUT: the number of files depends on how many threads got data.
-    assert len(list(out_dir.glob("signals_*.parquet"))) >= 1
+    assert out_dir.is_dir()
+    parts = sorted(out_dir.glob("signals_*.parquet"))
+    assert parts, "expected at least one signals_*.parquet file"
 
+    out_glob = f"{out_dir}/*.parquet"
     columns = [
         r[0]
         for r in con.execute(
-            f"DESCRIBE SELECT * FROM read_parquet('{out_dir}/*.parquet')"
+            f"DESCRIBE SELECT * FROM read_parquet('{out_glob}')"
         ).fetchall()
     ]
     rows = con.execute(
         f"""
         SELECT device_id, date, ST_X(geom), ST_Y(geom)
-        FROM read_parquet('{out_dir}/*.parquet')
+        FROM read_parquet('{out_glob}')
         ORDER BY device_id
         """
     ).fetchall()

@@ -32,8 +32,8 @@ def convert_signals(
     csv_buffer_size: int = CSV_BUFFER_SIZE,
 ) -> int:
     """Reads the signal CSV parts matching `source_glob`, adds a date column and a
-    point geometry, and writes Parquet files into the `destination` directory
-    (local path or s3:// URI). Returns the number of rows written.
+    point geometry, and writes a single Parquet file to `destination`
+    (local file path or s3:// URI ending in .parquet). Returns the number of rows written.
     """
     # The CSV's first column is an unnamed pandas index: we skip it by
     # selecting only the columns we need.
@@ -59,15 +59,11 @@ def convert_signals(
 
 def handler(event, context):
     """Converts every signal part (*.csv.gz) under the landing prefix to Parquet.
-
-    DuckDB reads the gzipped CSVs straight from S3 and writes the Parquet files
-    (one per writer thread) straight to the staging bucket: nothing is
-    downloaded to the Lambda.
-
-    The event is ignored, so invoke it directly instead of wiring an S3 trigger
-    (a trigger would run it once per uploaded part).
     """
     source_glob = f"s3://{LANDING_BUCKET}/{SIGNALS_PREFIX.strip('/')}/*.csv.gz"
+    # Without PER_THREAD_OUTPUT, COPY TO writes exactly one file at this path,
+    # so it must be a full object key, not a "folder".
+    # destination = f"s3://{STAGING_BUCKET}/{STAGING_PREFIX.strip('/')}/signals.parquet"
     destination = f"s3://{STAGING_BUCKET}/{STAGING_PREFIX.strip('/')}"
 
     with duckdb_resource.open_database("signals.duckdb") as con:
